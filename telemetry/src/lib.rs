@@ -3,7 +3,6 @@
 //! Telemetry is a module that provides functionality for collecting and
 //! reporting OpenTelemetry-based metrics.
 
-mod export;
 mod init;
 mod tracing;
 
