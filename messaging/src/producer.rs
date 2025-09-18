@@ -1,19 +1,21 @@
 use std::time::Duration;
-use std::thread;
 
 use rdkafka::config::ClientConfig;
 use rdkafka::Message as KafkaMessage;
 use rdkafka::producer::{ThreadedProducer, BaseRecord, ProducerContext};
 use rdkafka::client::ClientContext;
-use crate::{KafkaConfig, DeliveryInfo, ProviderError, Message};
+use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, ProviderError, Message, SRClient};
+
+
 
 /// KafkaProducer using ThreadedProducer with retry
 pub struct KafkaProducer {
     inner: ThreadedProducer<ProduceCallbackLogger>,
+    schema_registry: Option<SRClient>,
 }
 
 impl KafkaProducer {
-    pub fn new(cfg: &KafkaConfig) -> Result<Self, ProviderError> {
+    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, ProviderError> {
 
         let binding = ClientConfig::new();
         let mut config = binding;
@@ -30,19 +32,37 @@ impl KafkaProducer {
             .create_with_context(ProduceCallbackLogger {})
             .expect("invalid producer config");
 
-        Ok(Self {
-            inner: producer,
+        let sr_client = if let Some(cfg) = &schema_cfg {
+            if cfg.url.is_empty() {
+                None
+            } else {
+                Some(SRClient::new(cfg.clone()))
+            }
+        } else {
+            None
+        };
+
+        Ok(Self { 
+            inner: producer, 
+            schema_registry: sr_client
         })
     }
 
     /// Send message once
-    pub fn send_once(
+    pub async fn send_once(
         &self,
         msg: Message,
     ) -> Result<DeliveryInfo, ProviderError> {
+        let payload = if let Some(sr) = &self.schema_registry {
+            // schema_registry exists → serialize
+            sr.validate_and_encode_json(&msg.topic, msg.payload).await?
+        } else {
+            // no schema_registry → use raw payload
+            msg.payload.clone()
+        };
 
         let mut record = BaseRecord::to(msg.topic.as_str())
-            .payload(&msg.payload)
+            .payload(&payload)
             .key(msg.key.as_deref().unwrap_or(&[]));
 
         if let Some(p) = msg.partition {
@@ -68,21 +88,26 @@ impl KafkaProducer {
     }
 
     /// Send with retry
-    pub fn send_with_retry(
+    pub async fn send_with_retry(
         &self,
         msg: Message,
         max_retries: usize,
         retry_delay: Duration,
     ) -> Result<DeliveryInfo, ProviderError> {
         for attempt in 0..=max_retries {
-            match self.send_once(msg.clone()) {
+            match self.send_once(msg.clone()).await {
                 Ok(info) => return Ok(info),
                 Err(err) => {
                     if attempt == max_retries {
                         return Err(err);
                     }
-                    eprintln!("Send failed (attempt {}/{}): {:?}, retrying...", attempt + 1, max_retries, err);
-                    thread::sleep(retry_delay);
+                    eprintln!(
+                        "Send failed (attempt {}/{}): {:?}, retrying...",
+                        attempt + 1,
+                        max_retries,
+                        err
+                    );
+                    tokio::time::sleep(retry_delay).await; // use async sleep
                 }
             }
         }

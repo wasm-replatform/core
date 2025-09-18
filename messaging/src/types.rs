@@ -9,6 +9,14 @@ pub struct KafkaConfig {
     pub enable_auto_commit: Option<bool>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SchemaConfig {
+    pub url: String,
+    pub api_key: Option<String>,
+    pub api_secret: Option<String>,
+    pub cache_ttl_secs: Option<u64>,
+}
+
 #[derive(Debug)]
 pub struct DeliveryInfo {
     pub topic: String,
@@ -35,6 +43,8 @@ pub enum ProviderError {
     SendFailed(String),
     #[error("consumer error: {0}")]
     ConsumerError(String),
+    #[error("schema registry error: {0}")]
+    SchemaRegistryError(String),
     #[error("other: {0}")]
     Other(String),
 }
