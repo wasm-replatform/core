@@ -4,7 +4,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::Message as KafkaMessage;
 use rdkafka::producer::{ThreadedProducer, BaseRecord, ProducerContext};
 use rdkafka::client::ClientContext;
-use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, ProviderError, Message, SRClient};
+use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, ProviderError, Message, SRClient, Partitioner};
 
 
 
@@ -12,6 +12,7 @@ use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, ProviderError, Message, SRC
 pub struct KafkaProducer {
     inner: ThreadedProducer<ProduceCallbackLogger>,
     schema_registry: Option<SRClient>,
+    partitioner: Option<Partitioner>,
 }
 
 impl KafkaProducer {
@@ -32,6 +33,18 @@ impl KafkaProducer {
             .create_with_context(ProduceCallbackLogger {})
             .expect("invalid producer config");
 
+        // Optional: Initialize custom partitioner if js_partitioner is true
+        let partitioner = if cfg.js_partitioner.unwrap_or(false) {
+            if let Some(part_count) = cfg.partition_count {
+                Some(Partitioner::new(part_count))
+            } else {
+                None
+            }
+        } else {
+            None
+        };    
+            
+        // Initialize schema registry client if config is provided
         let sr_client = if let Some(cfg) = &schema_cfg {
             if cfg.url.is_empty() {
                 None
@@ -44,7 +57,8 @@ impl KafkaProducer {
 
         Ok(Self { 
             inner: producer, 
-            schema_registry: sr_client
+            schema_registry: sr_client,
+            partitioner,
         })
     }
 
@@ -65,8 +79,14 @@ impl KafkaProducer {
             .payload(&payload)
             .key(msg.key.as_deref().unwrap_or(&[]));
 
+        // Set partition if provided, else use custom partitioner if available    
         if let Some(p) = msg.partition {
             record = record.partition(p);
+        }else if let Some(partitioner) = &self.partitioner {
+            if let Some(key) = msg.key.as_deref() {
+                let partition = partitioner.partition(key);
+                record = record.partition(partition);
+            }
         }
 
         let send_result = self.inner.send(record);
@@ -101,7 +121,7 @@ impl KafkaProducer {
                     if attempt == max_retries {
                         return Err(err);
                     }
-                    eprintln!(
+                    tracing::error!(
                         "Send failed (attempt {}/{}): {:?}, retrying...",
                         attempt + 1,
                         max_retries,
@@ -133,20 +153,24 @@ impl ProducerContext for ProduceCallbackLogger {
         match dr {
             Ok(msg) => {
                 let key: &str = msg.key_view().unwrap().unwrap();
-                println!(
+                tracing::info!(
                     "produced message with key {} in offset {} of partition {}",
                     key,
                     msg.offset(),
                     msg.partition()
                 )
             }
-            Err(producer_err) => {
-                let key: &str = producer_err.1.key_view().unwrap().unwrap();
+            Err((producer_err, message)) => {
+                // Wrap KafkaError in ProviderError
+                let provider_err = ProviderError::Kafka(producer_err.clone());
+                let key: &str = message.key_view().unwrap().unwrap();
 
-                println!(
-                    "failed to produce message with key {} - {}",
-                    key, producer_err.0,
-                )
+                 // Log or forward the structured error
+                 tracing::error!(
+                    "Failed to produce message with key '{}': {}",
+                    key,
+                    provider_err
+                );
             }
         }
     }

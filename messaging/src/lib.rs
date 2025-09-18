@@ -11,4 +11,5 @@ pub mod types;
 
 
 pub use types::*;
+pub use partitioner::Partitioner;
 pub use schema_registry::SRClient;

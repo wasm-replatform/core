@@ -7,6 +7,8 @@ pub struct KafkaConfig {
     pub password: Option<String>,
     pub group_id: Option<String>, // only used for consumer
     pub enable_auto_commit: Option<bool>,
+    pub js_partitioner: Option<bool>,
+    pub partition_count: Option<i32>, // only used for producer
 }
 
 #[derive(Debug, Clone)]
