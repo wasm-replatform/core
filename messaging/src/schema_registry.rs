@@ -210,7 +210,7 @@ impl SRClient {
                 interval.tick().await;
                 let mut map = schemas_clone.lock().unwrap();
                 map.clear();
-                println!("[SRClient] Schema cache cleared");
+                tracing::info!("[SRClient] Schema cache cleared");
             }
         });
     }

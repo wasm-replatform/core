@@ -126,14 +126,14 @@ impl ClientContext for ConsumerCallbackLogger {}
 
 impl ConsumerContext for ConsumerCallbackLogger {
     fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
-        println!("Pre rebalance {:?}", rebalance);
+        tracing::warn!("Pre rebalance {:?}", rebalance);
     }
 
     fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
-        println!("Post rebalance {:?}", rebalance);
+        tracing::warn!("Post rebalance {:?}", rebalance);
     }
 
     fn commit_callback(&self, result: KafkaResult<()>, _offsets: &TopicPartitionList) {
-        println!("Committing offsets: {:?}", result);
+        tracing::debug!("Committing offsets: {:?}", result);
     }
 }
