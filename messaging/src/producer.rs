@@ -153,7 +153,7 @@ impl ProducerContext for ProduceCallbackLogger {
         match dr {
             Ok(msg) => {
                 let key: &str = msg.key_view().unwrap().unwrap();
-                tracing::info!(
+                tracing::debug!(
                     "produced message with key {} in offset {} of partition {}",
                     key,
                     msg.offset(),
