@@ -810,10 +810,11 @@ dependencies = [
 name = "keyvault"
 version = "0.1.0"
 dependencies = [
- "anyhow",
+ "azure_core",
  "azure_identity",
  "azure_security_keyvault_secrets",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
