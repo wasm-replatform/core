@@ -218,3 +218,33 @@ impl SRClient {
         });
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*; // brings DecodedPayload, MAGIC_BYTE, MessagingError into scope
+
+    #[test]
+    fn encode_then_decode_roundtrip() {
+        let registry_id: u32 = 0xAABBCCDD;
+        let payload = b"hello world".to_vec();
+
+        // Encode
+        let encoded = DecodedPayload::encode(registry_id, payload.clone());
+
+        // Expected layout:
+        // [ magic_byte ][ registry_id (4 bytes BE) ][ payload... ]
+        assert_eq!(encoded[0], MAGIC_BYTE, "magic byte mismatch");
+
+        let expected_id_bytes = registry_id.to_be_bytes();
+        assert_eq!(&encoded[1..5], &expected_id_bytes, "registry id mismatch");
+        assert_eq!(&encoded[5..], &payload, "payload mismatch");
+
+        // Decode
+        let decoded = DecodedPayload::decode(&encoded).expect("decode failed");
+
+        assert_eq!(decoded.magic_byte, MAGIC_BYTE);
+        assert_eq!(decoded.registry_id, registry_id);
+        assert_eq!(decoded.payload, payload.as_slice());
+    }
+}
