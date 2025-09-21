@@ -1,5 +1,5 @@
 [workspace]
-members = ["api", "telemetry"]
+members = ["api", "telemetry", "messaging"]
 resolver = "3"
 
 [workspace.package]
