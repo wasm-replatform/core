@@ -38,7 +38,7 @@ pub struct Message {
 }
 
 #[derive(Error, Debug)]
-pub enum ProviderError {
+pub enum MessagingError {
     #[error("kafka error: {0}")]
     Kafka(#[from] rdkafka::error::KafkaError),
     #[error("send failed: {0}")]

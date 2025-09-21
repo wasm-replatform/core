@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use std::time::Duration;
 use tokio::time;
 
@@ -10,13 +11,50 @@ use schema_registry_client::rest::schema_registry_client::{Client, SchemaRegistr
 use schema_registry_client::rest::models::RegisteredSchema;
 use schema_registry_client::rest::client_config::{BasicAuth, ClientConfig as SchemaClientConfig};
 
-use crate::{SchemaConfig, ProviderError};
+use crate::{SchemaConfig, MessagingError};
 
 /// Decoded Kafka message
 pub struct DecodedPayload<'a> {
     pub magic_byte: u8,
     pub registry_id: u32,
     pub payload: &'a [u8],
+}
+
+impl DecodedPayload<'_> {
+    /// Encode payload with schema registry ID repeats JS code
+    pub fn encode(registry_id: u32, payload: Vec<u8>) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(1 + 4 + payload.len());
+
+        // Magic byte
+        buf.push(MAGIC_BYTE);
+
+        // Registry ID in big-endian
+        buf.extend(&registry_id.to_be_bytes());
+
+        // Payload
+        buf.extend(payload);
+
+        buf
+    }
+
+    /// Decode payload
+    pub fn decode(buffer: &[u8]) -> Result<DecodedPayload<'_>, MessagingError> {
+        if buffer.len() < 5 {
+            return Err(MessagingError::SchemaRegistryError(
+                "Buffer too short to decode".to_string(),
+            ));
+        }
+    
+        let magic_byte = buffer[0];
+        let registry_id = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]);
+        let payload = &buffer[5..];
+    
+        Ok(DecodedPayload {
+            magic_byte,
+            registry_id,
+            payload,
+        })
+    }
 }
 
 pub struct SRClient {
@@ -59,52 +97,35 @@ impl SRClient {
     
         sr_client
     }
-
    
     /// Serialize payload to JSON with optional schema registry
     pub async fn validate_and_encode_json(
         &self,
         topic: &str,
         buffer: Vec<u8>,
-    ) -> Result<Vec<u8>, ProviderError> {
+    ) -> Result<Vec<u8>, MessagingError> {
         // If schema registry is available, use it
         if self.client.is_some() {
             let schema = self.get_or_fetch_schema(topic).await?;
             let payload: Value = serde_json::from_slice(&buffer)
-                .map_err(|e| ProviderError::SchemaRegistryError(format!("Invalid JSON: {:?}", e)))?;
+                .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid JSON: {:?}", e)))?;
 
             // Validate payload against schema
             self.validate_payload_with_schema(&schema, &payload)?;
 
             // Get the registry ID, return error if missing
             let registry_id = schema.id.ok_or_else(|| {
-                ProviderError::SchemaRegistryError(format!("Registry ID for topic {} is missing", topic))
+                MessagingError::SchemaRegistryError(format!("Registry ID for topic {} is missing", topic))
             })? as u32;
 
             // Kafka encoding with magic byte + registry ID
-            Ok(Self::encode(registry_id, buffer))
+            Ok(DecodedPayload::encode(registry_id, buffer))
         } else {
             // No schema registry → fallback to plain JSON
             serde_json::to_vec(&buffer).map_err(|e| {
-                ProviderError::SchemaRegistryError(format!("JSON serialization failed: {:?}", e))
+                MessagingError::SchemaRegistryError(format!("JSON serialization failed: {:?}", e))
             })
         }
-    }
-
-    /// Encode payload with schema registry ID repeats JS code
-    fn encode(registry_id: u32, payload: Vec<u8>) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(1 + 4 + payload.len());
-
-        // Magic byte
-        buf.push(MAGIC_BYTE);
-
-        // Registry ID in big-endian
-        buf.extend(&registry_id.to_be_bytes());
-
-        // Payload
-        buf.extend(payload);
-
-        buf
     }
 
     /// Deserialize payload to JSON with optional schema registry
@@ -112,15 +133,15 @@ impl SRClient {
         &self,
         topic: &str,
         buffer: &[u8],
-    ) -> Result<Vec<u8>, ProviderError> {
+    ) -> Result<Vec<u8>, MessagingError> {
         if self.client.is_some() {
-            let message = Self::decode(buffer)?;
+            let message = DecodedPayload::decode(buffer)?;
     
             // Fetch the schema for this topic (optional cache)
             let schema = self.get_or_fetch_schema(topic).await?;
 
             let payload: Value = serde_json::from_slice(&message.payload)
-                .map_err(|e| ProviderError::SchemaRegistryError(format!("Invalid JSON: {:?}", e)))?;
+                .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid JSON: {:?}", e)))?;
 
             self.validate_payload_with_schema(&schema, &payload)?;
             
@@ -128,27 +149,9 @@ impl SRClient {
         } else {
             // No schema registry → plain JSON
             serde_json::from_slice(buffer).map_err(|e| {
-                ProviderError::SchemaRegistryError(format!("JSON deserialization failed: {:?}", e))
+                MessagingError::SchemaRegistryError(format!("JSON deserialization failed: {:?}", e))
             })
         }
-    }
-
-    pub fn decode(buffer: &[u8]) -> Result<DecodedPayload<'_>, ProviderError> {
-        if buffer.len() < 5 {
-            return Err(ProviderError::SchemaRegistryError(
-                "Buffer too short to decode".to_string(),
-            ));
-        }
-    
-        let magic_byte = buffer[0];
-        let registry_id = u32::from_be_bytes([buffer[1], buffer[2], buffer[3], buffer[4]]);
-        let payload = &buffer[5..];
-    
-        Ok(DecodedPayload {
-            magic_byte,
-            registry_id,
-            payload,
-        })
     }
 
     /// Validate a JSON payload against a provided RegisteredSchema
@@ -156,30 +159,30 @@ impl SRClient {
         &self,
         schema: &RegisteredSchema,
         payload: &Value,
-    ) -> Result<(), ProviderError> {
+    ) -> Result<(), MessagingError> {
         let schema_str = schema.schema.as_ref().ok_or_else(|| {
-            ProviderError::SchemaRegistryError("Schema string is missing".into())
+            MessagingError::SchemaRegistryError("Schema string is missing".into())
         })?;
 
         let schema_json: Value = serde_json::from_str(schema_str)
-            .map_err(|e| ProviderError::SchemaRegistryError(format!("Invalid schema JSON: {:?}", e)))?;
+            .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid schema JSON: {:?}", e)))?;
 
         // Simple one-off validation
         validate(&schema_json, payload).map_err(|e| {
-            ProviderError::SchemaRegistryError(format!("JSON validation failed: {}", e))
+            MessagingError::SchemaRegistryError(format!("JSON validation failed: {}", e))
         })?;
 
         Ok(())
     }
 
-    async fn get_or_fetch_schema(&self, topic: &str) -> Result<RegisteredSchema, ProviderError> {
+    async fn get_or_fetch_schema(&self, topic: &str) -> Result<RegisteredSchema, MessagingError> {
         // If no schema registry client, return error (caller can handle fallback)
         let sr = self.client.as_ref().ok_or_else(|| {
-            ProviderError::SchemaRegistryError("No schema registry client available".to_string())
+            MessagingError::SchemaRegistryError("No schema registry client available".to_string())
         })?;
 
         // Lock the schema cache
-        let mut schemas = self.schemas.lock().unwrap();
+        let mut schemas = self.schemas.lock().await;
         if let Some(schema) = schemas.get(topic) {
             Ok(schema.clone())
         } else {
@@ -189,7 +192,7 @@ impl SRClient {
                 .get_latest_version(&subject, None)
                 .await
                 .map_err(|e| {
-                    ProviderError::SchemaRegistryError(format!(
+                    MessagingError::SchemaRegistryError(format!(
                         "Failed to fetch schema for {}: {:?}",
                         subject, e
                     ))
@@ -208,7 +211,7 @@ impl SRClient {
             let mut interval = time::interval(Duration::from_secs(cache_ttl_secs));
             loop {
                 interval.tick().await;
-                let mut map = schemas_clone.lock().unwrap();
+                let mut map = schemas_clone.lock().await;
                 map.clear();
                 tracing::info!("[SRClient] Schema cache cleared");
             }

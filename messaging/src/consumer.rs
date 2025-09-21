@@ -6,7 +6,7 @@ use rdkafka::message::{Message as KafkaMessage, Headers};
 use rdkafka::topic_partition_list::TopicPartitionList;
 use futures::StreamExt;
 use tokio::sync::watch;
-use crate::{KafkaConfig, ProviderError, SchemaConfig, SRClient, Message};
+use crate::{KafkaConfig, MessagingError, SchemaConfig, SRClient, Message};
 
 pub struct KafkaConsumer {
     inner: StreamConsumer<ConsumerCallbackLogger>,
@@ -15,7 +15,7 @@ pub struct KafkaConsumer {
 }
 
 impl KafkaConsumer {
-    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, ProviderError> {
+    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, MessagingError> {
         let mut client = ClientConfig::new();
         let context = ConsumerCallbackLogger;
         client.set("bootstrap.servers", &cfg.brokers);
@@ -54,14 +54,14 @@ impl KafkaConsumer {
         })
     }
 
-    pub async fn start<F, Fut>(&self, topics: &[&str], handler: F) -> Result<(), ProviderError>
+    pub async fn start<F, Fut>(&self, topics: &[&str], handler: F) -> Result<(), MessagingError>
     where
         F: Fn(Message) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<(), ProviderError>> + Send,
+        Fut: std::future::Future<Output = Result<(), MessagingError>> + Send,
     {
         self.inner
             .subscribe(topics)
-            .map_err(|e| ProviderError::ConsumerError(format!("{:?}", e)))?;
+            .map_err(|e| MessagingError::ConsumerError(format!("{:?}", e)))?;
     
         let mut stream = self.inner.stream();
     

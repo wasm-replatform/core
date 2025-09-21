@@ -4,7 +4,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::Message as KafkaMessage;
 use rdkafka::producer::{ThreadedProducer, BaseRecord, ProducerContext};
 use rdkafka::client::ClientContext;
-use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, ProviderError, Message, SRClient, Partitioner};
+use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, MessagingError, Message, SRClient, Partitioner};
 
 
 
@@ -16,7 +16,7 @@ pub struct KafkaProducer {
 }
 
 impl KafkaProducer {
-    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, ProviderError> {
+    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, MessagingError> {
 
         let binding = ClientConfig::new();
         let mut config = binding;
@@ -66,7 +66,7 @@ impl KafkaProducer {
     pub async fn send_once(
         &self,
         msg: Message,
-    ) -> Result<DeliveryInfo, ProviderError> {
+    ) -> Result<DeliveryInfo, MessagingError> {
         let payload = if let Some(sr) = &self.schema_registry {
             // schema_registry exists → serialize
             sr.validate_and_encode_json(&msg.topic, msg.payload).await?
@@ -113,7 +113,7 @@ impl KafkaProducer {
         msg: Message,
         max_retries: usize,
         retry_delay: Duration,
-    ) -> Result<DeliveryInfo, ProviderError> {
+    ) -> Result<DeliveryInfo, MessagingError> {
         for attempt in 0..=max_retries {
             match self.send_once(msg.clone()).await {
                 Ok(info) => return Ok(info),
@@ -130,8 +130,10 @@ impl KafkaProducer {
                     tokio::time::sleep(retry_delay).await; // use async sleep
                 }
             }
-        }
-        unreachable!()
+        };
+        Err(MessagingError::SendFailed(
+            "Maximum retries exceeded".to_string(),
+        ))
     }
 }
 
@@ -161,8 +163,8 @@ impl ProducerContext for ProduceCallbackLogger {
                 )
             }
             Err((producer_err, message)) => {
-                // Wrap KafkaError in ProviderError
-                let provider_err = ProviderError::Kafka(producer_err.clone());
+                // Wrap KafkaError in MessagingError
+                let provider_err = MessagingError::Kafka(producer_err.clone());
                 let key: &str = message.key_view().unwrap().unwrap();
 
                  // Log or forward the structured error
