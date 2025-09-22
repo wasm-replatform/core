@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use azure_core::credentials::{Secret, TokenCredential};
 use azure_core::http::StatusCode;
-use azure_identity::DeveloperToolsCredential;
+use azure_identity::{ClientSecretCredential, DeveloperToolsCredential};
 use azure_security_keyvault_secrets::SecretClient;
 use tokio::sync::watch;
 use tokio::time;
@@ -21,18 +22,35 @@ impl From<azure_core::Error> for KeyVaultError {
 
 pub type Result<T> = std::result::Result<T, KeyVaultError>;
 
+pub struct KeyVaultConfig {
+    /// Only the vault name is required, not the full url.
+    pub keyvault: String,
+    /// Will use developer credentials if not specified.
+    pub credentials: Option<CredentialConfig>,
+}
+
+pub struct CredentialConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub tenant_id: String,
+}
+
 pub struct SecretRetriever {
     secret_client: Arc<SecretClient>,
 }
 
 impl SecretRetriever {
-    /// Create a new `SecretRetriever` from a keyvault name. Only the vault name is required, not
-    /// the full url.
-    pub fn new(keyvault: &str) -> Result<SecretRetriever> {
-        let credential = DeveloperToolsCredential::new(None)?;
+    /// Create a new `SecretRetriever`.
+    pub fn new(config: KeyVaultConfig) -> Result<SecretRetriever> {
+        let credential: Arc<dyn TokenCredential> = if let Some(c) = config.credentials {
+            let secret = Secret::new(c.client_secret);
+            ClientSecretCredential::new(&c.tenant_id, c.client_id, secret, None)?
+        } else {
+            DeveloperToolsCredential::new(None)?
+        };
         Ok(SecretRetriever {
             secret_client: Arc::new(SecretClient::new(
-                &format!("https://{keyvault}.vault.azure.net/"),
+                &format!("https://{}.vault.azure.net/", config.keyvault),
                 credential,
                 None,
             )?),
@@ -149,7 +167,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_watch_secret() -> Result<()> {
-        let retriever = SecretRetriever::new("kv-ae-realtime-t01")?;
+        let retriever = SecretRetriever::new(KeyVaultConfig {
+            keyvault: String::from("kv-ae-realtime-t01"),
+            credentials: None,
+        })?;
         let mut watcher = retriever.watch_secret("realtime-confluent-key").await?;
         assert_eq!(watcher.next().await.unwrap(), "secret");
         Ok(())
