@@ -8,7 +8,6 @@ use serde_json::Value;
 use jsonschema::validate;
 
 use schema_registry_client::rest::schema_registry_client::{Client, SchemaRegistryClient};
-use schema_registry_client::rest::models::RegisteredSchema;
 use schema_registry_client::rest::client_config::{BasicAuth, ClientConfig as SchemaClientConfig};
 
 use crate::{SchemaConfig, MessagingError};
@@ -59,7 +58,7 @@ impl DecodedPayload<'_> {
 
 pub struct SRClient {
     client: Option<SchemaRegistryClient>,
-    schemas: Arc<Mutex<HashMap<String, RegisteredSchema>>>,
+    schemas: Arc<Mutex<HashMap<String, (u32, Value)>>>,
 }
 
 /// Constants for encoding/decoding
@@ -106,20 +105,15 @@ impl SRClient {
     ) -> Result<Vec<u8>, MessagingError> {
         // If schema registry is available, use it
         if self.client.is_some() {
-            let schema = self.get_or_fetch_schema(topic).await?;
+            let (id, schema) = self.get_or_fetch_schema(topic).await?;
             let payload: Value = serde_json::from_slice(&buffer)
                 .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid JSON: {:?}", e)))?;
 
             // Validate payload against schema
             self.validate_payload_with_schema(&schema, &payload)?;
 
-            // Get the registry ID, return error if missing
-            let registry_id = schema.id.ok_or_else(|| {
-                MessagingError::SchemaRegistryError(format!("Registry ID for topic {} is missing", topic))
-            })? as u32;
-
             // Kafka encoding with magic byte + registry ID
-            Ok(DecodedPayload::encode(registry_id, buffer))
+            Ok(DecodedPayload::encode(id, buffer))
         } else {
             // No schema registry → fallback to plain JSON
             serde_json::to_vec(&buffer).map_err(|e| {
@@ -138,7 +132,7 @@ impl SRClient {
             let message = DecodedPayload::decode(buffer)?;
     
             // Fetch the schema for this topic (optional cache)
-            let schema = self.get_or_fetch_schema(topic).await?;
+            let (_id, schema) = self.get_or_fetch_schema(topic).await?;
 
             let payload: Value = serde_json::from_slice(&message.payload)
                 .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid JSON: {:?}", e)))?;
@@ -157,25 +151,18 @@ impl SRClient {
     /// Validate a JSON payload against a provided RegisteredSchema
     pub fn validate_payload_with_schema(
         &self,
-        schema: &RegisteredSchema,
+        schema: &Value,
         payload: &Value,
     ) -> Result<(), MessagingError> {
-        let schema_str = schema.schema.as_ref().ok_or_else(|| {
-            MessagingError::SchemaRegistryError("Schema string is missing".into())
-        })?;
-
-        let schema_json: Value = serde_json::from_str(schema_str)
-            .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid schema JSON: {:?}", e)))?;
-
         // Simple one-off validation
-        validate(&schema_json, payload).map_err(|e| {
+        validate(&schema, payload).map_err(|e| {
             MessagingError::SchemaRegistryError(format!("JSON validation failed: {}", e))
         })?;
 
         Ok(())
     }
 
-    async fn get_or_fetch_schema(&self, topic: &str) -> Result<RegisteredSchema, MessagingError> {
+    async fn get_or_fetch_schema(&self, topic: &str) -> Result<(u32, Value), MessagingError> {
         // If no schema registry client, return error (caller can handle fallback)
         let sr = self.client.as_ref().ok_or_else(|| {
             MessagingError::SchemaRegistryError("No schema registry client available".to_string())
@@ -183,8 +170,8 @@ impl SRClient {
 
         // Lock the schema cache
         let mut schemas = self.schemas.lock().await;
-        if let Some(schema) = schemas.get(topic) {
-            Ok(schema.clone())
+        if let Some((id, value)) = schemas.get(topic) {
+            Ok((*id, value.clone()))
         } else {
             // Fetch from registry
             let subject = format!("{}-value", topic);
@@ -198,9 +185,20 @@ impl SRClient {
                     ))
                 })?;            
 
+            let schema_str = schema_response.schema.as_ref().ok_or_else(|| {
+                MessagingError::SchemaRegistryError("Schema string is missing".into())
+            })?;
+    
+            let schema_json: Value = serde_json::from_str(schema_str)
+                .map_err(|e| MessagingError::SchemaRegistryError(format!("Invalid schema JSON: {:?}", e)))?;
+
+            let registry_id = schema_response.id.ok_or_else(|| {
+                MessagingError::SchemaRegistryError(format!("Registry ID for topic {} is missing", topic))
+            })? as u32;
+            
             // Cache it
-            schemas.insert(topic.to_string(), schema_response.clone());
-            Ok(schema_response)
+            schemas.insert(topic.to_string(), (registry_id, schema_json.clone()));
+            Ok((registry_id, schema_json))
         }
     }
 
