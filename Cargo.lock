@@ -1200,6 +1200,7 @@ name = "messaging"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api",
  "base64",
  "futures",
  "jsonschema 0.33.0",
