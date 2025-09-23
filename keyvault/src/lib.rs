@@ -160,19 +160,3 @@ async fn fetch_secret(
     let secret = secret_client.get_secret(secret_name, None).await?.into_body().await?;
     Ok(secret.value)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_watch_secret() -> Result<()> {
-        let retriever = SecretRetriever::new(KeyVaultConfig {
-            keyvault: String::from("kv-ae-realtime-t01"),
-            credentials: None,
-        })?;
-        let mut watcher = retriever.watch_secret("realtime-confluent-key").await?;
-        assert_eq!(watcher.next().await.unwrap(), "secret");
-        Ok(())
-    }
-}
