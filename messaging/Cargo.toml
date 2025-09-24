@@ -9,7 +9,7 @@ anyhow.workspace = true
 base64 = "0.22"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 futures = "0.3"
-rdkafka = { version = "0.38", features = ["cmake-build", "tokio"] }
+rdkafka = { version = "0.38", features = ["ssl-vendored", "cmake-build", "tokio"] }
 schema-registry-client = { version = "0.4.1" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

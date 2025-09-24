@@ -21,8 +21,8 @@ impl KafkaConsumer {
         client.set("bootstrap.servers", &cfg.brokers);
 
         if let (Some(user), Some(pass)) = (cfg.username.as_ref(), cfg.password.as_ref()) {
-            client.set("security.protocol", "SASL_PLAINTEXT");
-            client.set("sasl.mechanisms", "PLAIN");
+            client.set("security.protocol", "SASL_SSL");
+            client.set("sasl.mechanism", "PLAIN");
             client.set("sasl.username", user);
             client.set("sasl.password", pass);
         }
@@ -34,6 +34,11 @@ impl KafkaConsumer {
         let consumer: StreamConsumer<ConsumerCallbackLogger> = client
             .create_with_context(context)
             .expect("Consumer creation failed");
+        if cfg.enable_auto_commit.is_some_and(|auto_commit| auto_commit) {
+            client.set("enable.auto.commit", "true");
+        } else {
+            client.set("enable.auto.commit", "false");
+        }
 
         let (tx, _rx) = watch::channel(false);
 

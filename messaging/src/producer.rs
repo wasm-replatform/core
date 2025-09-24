@@ -23,8 +23,8 @@ impl KafkaProducer {
         config.set("bootstrap.servers", &cfg.brokers);
 
         if let (Some(user), Some(pass)) = (cfg.username.as_ref(), cfg.password.as_ref()) {
-            config.set("security.protocol", "SASL_PLAINTEXT");
-            config.set("sasl.mechanisms", "PLAIN");
+            config.set("security.protocol", "SASL_SSL");
+            config.set("sasl.mechanism", "PLAIN");
             config.set("sasl.username", user);
             config.set("sasl.password", pass);
         }
