@@ -1,12 +1,13 @@
-use rdkafka::consumer::{BaseConsumer, StreamConsumer, Consumer, ConsumerContext, Rebalance};
-use rdkafka::config::ClientConfig;
-use rdkafka::error::KafkaResult;
-use rdkafka::client::ClientContext;
-use rdkafka::message::{Message as KafkaMessage, Headers};
-use rdkafka::topic_partition_list::TopicPartitionList;
 use futures::StreamExt;
+use rdkafka::client::ClientContext;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
+use rdkafka::error::KafkaResult;
+use rdkafka::message::{Headers, Message as KafkaMessage};
+use rdkafka::topic_partition_list::TopicPartitionList;
 use tokio::sync::watch;
-use crate::{KafkaConfig, MessagingError, SchemaConfig, SRClient, Message};
+
+use crate::{KafkaConfig, Message, MessagingError, SRClient, SchemaConfig};
 
 pub struct KafkaConsumer {
     inner: StreamConsumer<ConsumerCallbackLogger>,
@@ -15,7 +16,9 @@ pub struct KafkaConsumer {
 }
 
 impl KafkaConsumer {
-    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, MessagingError> {
+    pub fn new(
+        cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>,
+    ) -> Result<Self, MessagingError> {
         let mut client = ClientConfig::new();
         let context = ConsumerCallbackLogger;
         client.set("bootstrap.servers", &cfg.brokers);
@@ -31,9 +34,8 @@ impl KafkaConsumer {
             client.set("group.id", g);
         }
 
-        let consumer: StreamConsumer<ConsumerCallbackLogger> = client
-            .create_with_context(context)
-            .expect("Consumer creation failed");
+        let consumer: StreamConsumer<ConsumerCallbackLogger> =
+            client.create_with_context(context).expect("Consumer creation failed");
         if cfg.enable_auto_commit.is_some_and(|auto_commit| auto_commit) {
             client.set("enable.auto.commit", "true");
         } else {
@@ -43,20 +45,12 @@ impl KafkaConsumer {
         let (tx, _rx) = watch::channel(false);
 
         let sr_client = if let Some(cfg) = &schema_cfg {
-            if cfg.url.is_empty() {
-                None
-            } else {
-                Some(SRClient::new(cfg.clone()))
-            }
+            if cfg.url.is_empty() { None } else { Some(SRClient::new(cfg.clone())) }
         } else {
             None
         };
 
-        Ok(Self { 
-            inner: consumer, 
-            shutdown_tx: tx,
-            schema_registry: sr_client
-        })
+        Ok(Self { inner: consumer, shutdown_tx: tx, schema_registry: sr_client })
     }
 
     pub async fn start<F, Fut>(&self, topics: &[&str], handler: F) -> Result<(), MessagingError>
@@ -67,17 +61,16 @@ impl KafkaConsumer {
         self.inner
             .subscribe(topics)
             .map_err(|e| MessagingError::ConsumerError(format!("{:?}", e)))?;
-    
+
         let mut stream = self.inner.stream();
-    
+
         while let Some(msg_result) = stream.next().await {
             match msg_result {
                 Ok(kmsg) => {
                     // Convert OwnedMessage to your Message type
                     let owned_msg = kmsg.detach();
-                    let payload_bytes = owned_msg.payload()
-                        .map(|p| p.to_vec())    
-                        .unwrap_or_else(Vec::new);
+                    let payload_bytes =
+                        owned_msg.payload().map(|p| p.to_vec()).unwrap_or_else(Vec::new);
                     let payload = if let Some(sr) = &self.schema_registry {
                         // schema_registry exists → serialize
                         sr.validate_and_encode_json(&owned_msg.topic(), payload_bytes).await?
@@ -90,21 +83,20 @@ impl KafkaConsumer {
                         partition: Some(owned_msg.partition()),
                         offset: Some(owned_msg.offset()),
                         key: owned_msg.key().map(|k| k.to_vec()),
-                        payload: payload,
+                        payload,
                         headers: owned_msg.headers().map(|hdrs| {
                             hdrs.iter()
-                                .filter_map(|h| {
-                                    h.value.map(|v| (h.key.to_string(), v.to_vec()))
-                                })
+                                .filter_map(|h| h.value.map(|v| (h.key.to_string(), v.to_vec())))
                                 .collect::<Vec<_>>()
-                            }),
+                        }),
                     };
 
-    
                     // Call handler with OwnedMessage
                     match handler(message).await {
                         Ok(()) => {
-                            let _ = self.inner.commit_message(&kmsg, rdkafka::consumer::CommitMode::Async);
+                            let _ = self
+                                .inner
+                                .commit_message(&kmsg, rdkafka::consumer::CommitMode::Async);
                         }
                         Err(err) => {
                             tracing::error!("Handler error: {:?}", err);
@@ -116,7 +108,7 @@ impl KafkaConsumer {
                 }
             }
         }
-    
+
         Ok(())
     }
 

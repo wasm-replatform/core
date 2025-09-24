@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use rdkafka::config::ClientConfig;
 use rdkafka::Message as KafkaMessage;
-use rdkafka::producer::{ThreadedProducer, BaseRecord, ProducerContext};
 use rdkafka::client::ClientContext;
-use crate::{KafkaConfig, SchemaConfig, DeliveryInfo, MessagingError, Message, SRClient, Partitioner};
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::{BaseRecord, ProducerContext, ThreadedProducer};
 
-
+use crate::{
+    DeliveryInfo, KafkaConfig, Message, MessagingError, Partitioner, SRClient, SchemaConfig,
+};
 
 /// KafkaProducer using ThreadedProducer with retry
 pub struct KafkaProducer {
@@ -16,8 +17,9 @@ pub struct KafkaProducer {
 }
 
 impl KafkaProducer {
-    pub fn new(cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>) -> Result<Self, MessagingError> {
-
+    pub fn new(
+        cfg: &KafkaConfig, schema_cfg: Option<SchemaConfig>,
+    ) -> Result<Self, MessagingError> {
         let binding = ClientConfig::new();
         let mut config = binding;
         config.set("bootstrap.servers", &cfg.brokers);
@@ -29,9 +31,8 @@ impl KafkaProducer {
             config.set("sasl.password", pass);
         }
 
-        let producer = config
-            .create_with_context(ProduceCallbackLogger {})
-            .expect("invalid producer config");
+        let producer =
+            config.create_with_context(ProduceCallbackLogger {}).expect("invalid producer config");
 
         // Optional: Initialize custom partitioner if js_partitioner is true
         let partitioner = if cfg.js_partitioner.unwrap_or(false) {
@@ -42,31 +43,20 @@ impl KafkaProducer {
             }
         } else {
             None
-        };    
-            
+        };
+
         // Initialize schema registry client if config is provided
         let sr_client = if let Some(cfg) = &schema_cfg {
-            if cfg.url.is_empty() {
-                None
-            } else {
-                Some(SRClient::new(cfg.clone()))
-            }
+            if cfg.url.is_empty() { None } else { Some(SRClient::new(cfg.clone())) }
         } else {
             None
         };
 
-        Ok(Self { 
-            inner: producer, 
-            schema_registry: sr_client,
-            partitioner,
-        })
+        Ok(Self { inner: producer, schema_registry: sr_client, partitioner })
     }
 
     /// Send message once
-    pub async fn send_once(
-        &self,
-        msg: Message,
-    ) -> Result<DeliveryInfo, MessagingError> {
+    pub async fn send_once(&self, msg: Message) -> Result<DeliveryInfo, MessagingError> {
         let payload = if let Some(sr) = &self.schema_registry {
             // schema_registry exists → serialize
             sr.validate_and_encode_json(&msg.topic, msg.payload).await?
@@ -79,10 +69,10 @@ impl KafkaProducer {
             .payload(&payload)
             .key(msg.key.as_deref().unwrap_or(&[]));
 
-        // Set partition if provided, else use custom partitioner if available    
+        // Set partition if provided, else use custom partitioner if available
         if let Some(p) = msg.partition {
             record = record.partition(p);
-        }else if let Some(partitioner) = &self.partitioner {
+        } else if let Some(partitioner) = &self.partitioner {
             if let Some(key) = msg.key.as_deref() {
                 let partition = partitioner.partition(key);
                 record = record.partition(partition);
@@ -109,10 +99,7 @@ impl KafkaProducer {
 
     /// Send with retry
     pub async fn send_with_retry(
-        &self,
-        msg: Message,
-        max_retries: usize,
-        retry_delay: Duration,
+        &self, msg: Message, max_retries: usize, retry_delay: Duration,
     ) -> Result<DeliveryInfo, MessagingError> {
         for attempt in 0..=max_retries {
             match self.send_once(msg.clone()).await {
@@ -130,10 +117,8 @@ impl KafkaProducer {
                     tokio::time::sleep(retry_delay).await; // use async sleep
                 }
             }
-        };
-        Err(MessagingError::SendFailed(
-            "Maximum retries exceeded".to_string(),
-        ))
+        }
+        Err(MessagingError::SendFailed("Maximum retries exceeded".to_string()))
     }
 }
 
@@ -145,8 +130,7 @@ impl ProducerContext for ProduceCallbackLogger {
     type DeliveryOpaque = ();
 
     fn delivery(
-        &self,
-        delivery_result: &rdkafka::producer::DeliveryResult<'_>,
+        &self, delivery_result: &rdkafka::producer::DeliveryResult<'_>,
         _delivery_opaque: Self::DeliveryOpaque,
     ) {
         let dr = delivery_result.as_ref();
@@ -167,12 +151,8 @@ impl ProducerContext for ProduceCallbackLogger {
                 let provider_err = MessagingError::Kafka(producer_err.clone());
                 let key: &str = message.key_view().unwrap().unwrap();
 
-                 // Log or forward the structured error
-                 tracing::error!(
-                    "Failed to produce message with key '{}': {}",
-                    key,
-                    provider_err
-                );
+                // Log or forward the structured error
+                tracing::error!("Failed to produce message with key '{}': {}", key, provider_err);
             }
         }
     }
